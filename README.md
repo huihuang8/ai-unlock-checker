@@ -6,6 +6,17 @@
 
 脚本会在结果顶部显示出口 IP 的参考地区、城市、ASN/运营商。这个地区来自第三方 IP 库，只能作为参考；AI 平台仍可能根据账号地区、付款方式、风控、ASN、Cookie 和浏览器状态做不同判断。
 
+普通输出会先显示中文解锁摘要，例如：
+
+```text
+AI 服务            状态     地区
+OpenAI             解锁     Singapore / Southeast / Singapore
+Gemini             解锁     Singapore / Southeast / Singapore
+Meta AI            不解锁   Singapore / Southeast / Singapore
+```
+
+摘要里只有底层结果为 `UNLOCKED` 时显示 `解锁`；`REACHABLE`、`LOCKED`、`FAILED` 都显示 `不解锁`，详细原因会在后面的表格里列出。
+
 ## 支持检测
 
 - OpenAI API
@@ -71,6 +82,7 @@ bash ai-unlock-checker.sh --no-geo
 - `FAILED`：连接失败、超时、TLS 错误或服务端返回异常状态。
 
 注意：Web 端服务经常启用 Cloudflare、风控或登录态检查。`REACHABLE` 不等于账号一定可用，但说明服务器出口至少能触达服务入口。
+中文摘要为了方便快速判断，会把 `REACHABLE` 也归为 `不解锁`；如果你想看它是 Cloudflare 挑战、地区限制还是连接失败，请看详细表格里的 `Result` 和 `Note`。
 
 ## 服务器环境要求
 
