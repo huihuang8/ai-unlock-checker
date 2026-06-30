@@ -4,6 +4,8 @@
 
 这个脚本适合在 VPS、云服务器、住宅代理出口机上直接运行。它不需要 API Key，不会登录账号，只通过公开入口和未认证 API 的 HTTP 响应判断网络可达性、地区限制和浏览器挑战。
 
+脚本会在结果顶部显示出口 IP 的参考地区、城市、ASN/运营商。这个地区来自第三方 IP 库，只能作为参考；AI 平台仍可能根据账号地区、付款方式、风控、ASN、Cookie 和浏览器状态做不同判断。
+
 ## 支持检测
 
 - OpenAI API
@@ -56,6 +58,9 @@ bash ai-unlock-checker.sh --timeout 20 --connect-timeout 10
 
 # 禁用颜色
 bash ai-unlock-checker.sh --no-color
+
+# 不查询 IP 地区，只检测服务
+bash ai-unlock-checker.sh --no-geo
 ```
 
 ## 结果说明
