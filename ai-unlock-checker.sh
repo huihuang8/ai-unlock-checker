@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-VERSION="1.2.0"
+VERSION="1.2.1"
 TIMEOUT=12
 CONNECT_TIMEOUT=6
 JSON_OUTPUT=0
@@ -326,15 +326,50 @@ probe_geo() {
   probe_geo_ipapi "$ip" || probe_geo_ipwhois "$ip" || printf '\t\t\t\t\t'
 }
 
+trim_text() {
+  printf '%s' "$1" | awk '{$1=$1; print}'
+}
+
+location_has_part() {
+  local out="$1"
+  local part="$2"
+  local old_ifs item
+
+  old_ifs="$IFS"
+  IFS='/'
+  for item in $out; do
+    item="$(trim_text "$item")"
+    if [ "$item" = "$part" ]; then
+      IFS="$old_ifs"
+      return 0
+    fi
+  done
+  IFS="$old_ifs"
+  return 1
+}
+
+append_location_part() {
+  local out="$1"
+  local part
+
+  part="$(trim_text "$2")"
+  if [ -z "$part" ] || location_has_part "$out" "$part"; then
+    printf '%s' "$out"
+    return 0
+  fi
+
+  printf '%s' "${out}${out:+ / }${part}"
+}
+
 format_geo_location() {
   local country="$1"
   local region="$2"
   local city="$3"
   local out=""
 
-  [ -n "$country" ] && out="$country"
-  [ -n "$region" ] && out="${out}${out:+ / }${region}"
-  [ -n "$city" ] && out="${out}${out:+ / }${city}"
+  out="$(append_location_part "$out" "$country")"
+  out="$(append_location_part "$out" "$region")"
+  out="$(append_location_part "$out" "$city")"
   [ -n "$out" ] || out="unknown"
   printf '%s' "$out"
 }
