@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 TIMEOUT=12
 CONNECT_TIMEOUT=6
 JSON_OUTPUT=0
@@ -124,6 +124,27 @@ Hugging Face Chat|https://huggingface.co/chat/|200,302
 SERVICES_EOF
 )
 
+SUMMARY_SERVICES=$(cat <<'SUMMARY_SERVICES_EOF'
+OpenAI|OpenAI API
+ChatGPT|ChatGPT Web
+Claude|Claude Web
+Anthropic API|Anthropic API
+Gemini|Gemini Web
+Google AI API|Google AI API
+Google AI Studio|Google AI Studio
+Copilot|Microsoft Copilot
+Perplexity|Perplexity
+Grok|Grok
+Meta AI|Meta AI
+DeepSeek|DeepSeek Chat
+DeepSeek API|DeepSeek API
+Mistral|Mistral Le Chat
+Mistral API|Mistral API
+Poe|Poe
+Hugging Face|Hugging Face Chat
+SUMMARY_SERVICES_EOF
+)
+
 json_escape() {
   printf '%s' "$1" | awk '
     BEGIN { ORS = "" }
@@ -230,6 +251,20 @@ status_color() {
   esac
 }
 
+summary_status_text() {
+  case "$1" in
+    UNLOCKED) printf '解锁' ;;
+    *) printf '不解锁' ;;
+  esac
+}
+
+summary_status_color() {
+  case "$1" in
+    UNLOCKED) printf '%s' "$C_GREEN" ;;
+    *) printf '%s' "$C_RED" ;;
+  esac
+}
+
 probe_ip() {
   local ip
   ip="$(curl -fsS --connect-timeout "$CONNECT_TIMEOUT" --max-time "$TIMEOUT" https://api.ipify.org 2>/dev/null || true)"
@@ -315,6 +350,35 @@ format_geo_asn() {
   printf '%s' "$out"
 }
 
+result_for_service() {
+  local results_file="$1"
+  local service="$2"
+  awk -F'\t' -v service="$service" '$1 == service { print; exit }' "$results_file"
+}
+
+print_summary_table() {
+  local results_file="$1"
+  local location="$2"
+  local display service line verdict status color reset
+
+  printf '解锁摘要:\n'
+  printf '%-18s %-8s %s\n' "AI 服务" "状态" "地区"
+  printf '%-18s %-8s %s\n' "------------------" "--------" "------------------------------"
+
+  while IFS='|' read -r display service; do
+    [ -n "$display" ] || continue
+    line="$(result_for_service "$results_file" "$service")"
+    verdict="$(printf '%s' "$line" | awk -F'\t' '{print $2}')"
+    [ -n "$verdict" ] || verdict="FAILED"
+    status="$(summary_status_text "$verdict")"
+    color="$(summary_status_color "$verdict")"
+    reset="$C_RESET"
+    printf '%-18s %s%-8s%s %s\n' "$display" "$color" "$status" "$reset" "$location"
+  done <<EOF
+$SUMMARY_SERVICES
+EOF
+}
+
 probe_service() {
   local name="$1"
   local url="$2"
@@ -378,7 +442,7 @@ probe_service() {
 }
 
 run_table() {
-  local public_ip geo country region city asn org timezone line name verdict code seconds remote_ip reason effective_url color reset
+  local public_ip geo country region city asn org timezone location results_file line name verdict code seconds remote_ip reason effective_url color reset
   public_ip="$(probe_ip)"
   geo="$(probe_geo "$public_ip")"
   country="$(printf '%s' "$geo" | awk -F'\t' '{print $1}')"
@@ -387,23 +451,34 @@ run_table() {
   asn="$(printf '%s' "$geo" | awk -F'\t' '{print $4}')"
   org="$(printf '%s' "$geo" | awk -F'\t' '{print $5}')"
   timezone="$(printf '%s' "$geo" | awk -F'\t' '{print $6}')"
+  location="$(format_geo_location "$country" "$region" "$city")"
+  results_file="$(mktemp)"
 
   printf '%sAI Unlock Checker%s v%s\n' "$C_GREEN" "$C_RESET" "$VERSION"
   printf 'Public IP: %s%s%s\n' "$C_DIM" "$public_ip" "$C_RESET"
   if [ "$GEO_OUTPUT" -eq 1 ]; then
-    printf 'IP Geo: %s%s%s\n' "$C_DIM" "$(format_geo_location "$country" "$region" "$city")" "$C_RESET"
+    printf 'IP Geo: %s%s%s\n' "$C_DIM" "$location" "$C_RESET"
     printf 'ASN: %s%s%s\n' "$C_DIM" "$(format_geo_asn "$asn" "$org")" "$C_RESET"
     if [ -n "$timezone" ]; then
       printf 'Timezone: %s%s%s\n' "$C_DIM" "$timezone" "$C_RESET"
     fi
   fi
   printf 'Timeout: %ss, Connect timeout: %ss\n\n' "$TIMEOUT" "$CONNECT_TIMEOUT"
-  printf '%-20s %-10s %-6s %-8s %-16s %s\n' "Service" "Result" "HTTP" "Time" "Remote IP" "Note"
-  printf '%-20s %-10s %-6s %-8s %-16s %s\n' "--------------------" "----------" "------" "--------" "----------------" "------------------------------"
 
   while IFS='|' read -r name url expected; do
     [ -n "$name" ] || continue
-    line="$(probe_service "$name" "$url" "$expected")"
+    probe_service "$name" "$url" "$expected" >> "$results_file"
+  done <<EOF
+$SERVICES
+EOF
+
+  print_summary_table "$results_file" "$location"
+  printf '\n'
+  printf '%-20s %-10s %-6s %-8s %-16s %s\n' "Service" "Result" "HTTP" "Time" "Remote IP" "Note"
+  printf '%-20s %-10s %-6s %-8s %-16s %s\n' "--------------------" "----------" "------" "--------" "----------------" "------------------------------"
+
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
     name="$(printf '%s' "$line" | awk -F'\t' '{print $1}')"
     verdict="$(printf '%s' "$line" | awk -F'\t' '{print $2}')"
     code="$(printf '%s' "$line" | awk -F'\t' '{print $3}')"
@@ -413,18 +488,18 @@ run_table() {
     color="$(status_color "$verdict")"
     reset="$C_RESET"
     printf '%-20s %s%-10s%s %-6s %-8s %-16s %s\n' "$name" "$color" "$verdict" "$reset" "$code" "$seconds" "$remote_ip" "$reason"
-  done <<EOF
-$SERVICES
-EOF
+  done < "$results_file"
 
   printf '\n%sLegend:%s UNLOCKED=expected response, REACHABLE=network OK but login/browser challenge may apply, LOCKED=region block detected, FAILED=timeout/network/server error.\n' "$C_DIM" "$C_RESET"
+  printf '%sSummary:%s Only UNLOCKED is shown as 解锁. REACHABLE, LOCKED, and FAILED are shown as 不解锁 in the Chinese summary.\n' "$C_DIM" "$C_RESET"
   if [ "$GEO_OUTPUT" -eq 1 ]; then
     printf '%sNote:%s IP Geo is a third-party reference for the server exit IP. AI providers may judge region differently by account, payment, risk score, ASN, and browser state.\n' "$C_DIM" "$C_RESET"
   fi
+  rm -f "$results_file"
 }
 
 run_json() {
-  local public_ip geo country region city asn org timezone first line name verdict code seconds remote_ip reason effective_url url expected code_json seconds_json
+  local public_ip geo country region city asn org timezone location results_file first line name verdict code seconds remote_ip reason effective_url url expected code_json seconds_json display service status
   public_ip="$(probe_ip)"
   geo="$(probe_geo "$public_ip")"
   country="$(printf '%s' "$geo" | awk -F'\t' '{print $1}')"
@@ -433,6 +508,16 @@ run_json() {
   asn="$(printf '%s' "$geo" | awk -F'\t' '{print $4}')"
   org="$(printf '%s' "$geo" | awk -F'\t' '{print $5}')"
   timezone="$(printf '%s' "$geo" | awk -F'\t' '{print $6}')"
+  location="$(format_geo_location "$country" "$region" "$city")"
+  results_file="$(mktemp)"
+
+  while IFS='|' read -r name url expected; do
+    [ -n "$name" ] || continue
+    probe_service "$name" "$url" "$expected" >> "$results_file"
+  done <<EOF
+$SERVICES
+EOF
+
   printf '{\n'
   printf '  "tool": "ai-unlock-checker",\n'
   printf '  "version": "%s",\n' "$(json_escape "$VERSION")"
@@ -446,11 +531,32 @@ run_json() {
     "$(json_string_or_null "$timezone")"
   printf '  "timeout_seconds": %s,\n' "$TIMEOUT"
   printf '  "connect_timeout_seconds": %s,\n' "$CONNECT_TIMEOUT"
+  printf '  "summary": [\n'
+  first=1
+  while IFS='|' read -r display service; do
+    [ -n "$display" ] || continue
+    line="$(result_for_service "$results_file" "$service")"
+    verdict="$(printf '%s' "$line" | awk -F'\t' '{print $2}')"
+    [ -n "$verdict" ] || verdict="FAILED"
+    status="$(summary_status_text "$verdict")"
+    if [ "$first" -eq 0 ]; then
+      printf ',\n'
+    fi
+    first=0
+    printf '    {"provider":"%s","status":"%s","region":"%s","source_service":"%s","source_result":"%s"}' \
+      "$(json_escape "$display")" \
+      "$(json_escape "$status")" \
+      "$(json_escape "$location")" \
+      "$(json_escape "$service")" \
+      "$(json_escape "$verdict")"
+  done <<EOF
+$SUMMARY_SERVICES
+EOF
+  printf '\n  ],\n'
   printf '  "results": [\n'
   first=1
-  while IFS='|' read -r name url expected; do
-    [ -n "$name" ] || continue
-    line="$(probe_service "$name" "$url" "$expected")"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
     name="$(printf '%s' "$line" | awk -F'\t' '{print $1}')"
     verdict="$(printf '%s' "$line" | awk -F'\t' '{print $2}')"
     code="$(printf '%s' "$line" | awk -F'\t' '{print $3}')"
@@ -473,11 +579,10 @@ run_json() {
       "$(json_escape "$reason")" \
       "$(json_escape "$url")" \
       "$(json_escape "$effective_url")"
-  done <<EOF
-$SERVICES
-EOF
+  done < "$results_file"
   printf '\n  ]\n'
   printf '}\n'
+  rm -f "$results_file"
 }
 
 if [ "$JSON_OUTPUT" -eq 1 ]; then
