@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -u
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 TIMEOUT=12
 CONNECT_TIMEOUT=6
 JSON_OUTPUT=0
+GEO_OUTPUT=1
 NO_COLOR="${NO_COLOR:-}"
 UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 
@@ -19,6 +20,7 @@ Options:
   --json                  Output machine-readable JSON
   --timeout SECONDS       Total timeout for each service, default: 12
   --connect-timeout SEC   Connection timeout for each service, default: 6
+  --no-geo                Do not query public IP geolocation
   --no-color              Disable terminal colors
   -h, --help              Show help
   -v, --version           Show version
@@ -42,6 +44,9 @@ while [ "$#" -gt 0 ]; do
     --connect-timeout)
       shift
       CONNECT_TIMEOUT="${1:-}"
+      ;;
+    --no-geo)
+      GEO_OUTPUT=0
       ;;
     --no-color)
       NO_COLOR=1
@@ -157,6 +162,24 @@ json_http_code() {
   esac
 }
 
+json_string_or_null() {
+  if [ -n "$1" ]; then
+    printf '"%s"' "$(json_escape "$1")"
+  else
+    printf 'null'
+  fi
+}
+
+json_flat_string() {
+  local key="$1"
+  sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1 | sed 's/\\"/"/g; s#\\/#/#g'
+}
+
+json_flat_number() {
+  local key="$1"
+  sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*\([0-9][0-9.]*\).*/\1/p' | head -n 1
+}
+
 contains_status() {
   local list="$1"
   local status="$2"
@@ -215,6 +238,81 @@ probe_ip() {
   else
     printf 'unknown'
   fi
+}
+
+probe_geo_ipapi() {
+  local ip="$1"
+  local body country region city asn org timezone
+
+  body="$(curl -fsS --connect-timeout "$CONNECT_TIMEOUT" --max-time "$TIMEOUT" "https://ipapi.co/${ip}/json/" 2>/dev/null || true)"
+  [ -n "$body" ] || return 1
+
+  country="$(printf '%s' "$body" | json_flat_string "country_name")"
+  region="$(printf '%s' "$body" | json_flat_string "region")"
+  city="$(printf '%s' "$body" | json_flat_string "city")"
+  asn="$(printf '%s' "$body" | json_flat_string "asn")"
+  org="$(printf '%s' "$body" | json_flat_string "org")"
+  timezone="$(printf '%s' "$body" | json_flat_string "timezone")"
+
+  [ -n "$country$region$city$asn$org" ] || return 1
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$country" "$region" "$city" "$asn" "$org" "$timezone"
+}
+
+probe_geo_ipwhois() {
+  local ip="$1"
+  local body country region city asn org timezone
+
+  body="$(curl -fsS --connect-timeout "$CONNECT_TIMEOUT" --max-time "$TIMEOUT" "https://ipwho.is/${ip}" 2>/dev/null || true)"
+  [ -n "$body" ] || return 1
+
+  country="$(printf '%s' "$body" | json_flat_string "country")"
+  region="$(printf '%s' "$body" | json_flat_string "region")"
+  city="$(printf '%s' "$body" | json_flat_string "city")"
+  asn="$(printf '%s' "$body" | json_flat_number "asn")"
+  org="$(printf '%s' "$body" | json_flat_string "org")"
+  timezone="$(printf '%s' "$body" | json_flat_string "id")"
+
+  if [ -n "$asn" ]; then
+    asn="AS${asn}"
+  fi
+
+  [ -n "$country$region$city$asn$org" ] || return 1
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$country" "$region" "$city" "$asn" "$org" "$timezone"
+}
+
+probe_geo() {
+  local ip="$1"
+
+  if [ "$GEO_OUTPUT" -eq 0 ] || [ -z "$ip" ] || [ "$ip" = "unknown" ]; then
+    printf '\t\t\t\t\t'
+    return 0
+  fi
+
+  probe_geo_ipapi "$ip" || probe_geo_ipwhois "$ip" || printf '\t\t\t\t\t'
+}
+
+format_geo_location() {
+  local country="$1"
+  local region="$2"
+  local city="$3"
+  local out=""
+
+  [ -n "$country" ] && out="$country"
+  [ -n "$region" ] && out="${out}${out:+ / }${region}"
+  [ -n "$city" ] && out="${out}${out:+ / }${city}"
+  [ -n "$out" ] || out="unknown"
+  printf '%s' "$out"
+}
+
+format_geo_asn() {
+  local asn="$1"
+  local org="$2"
+  local out=""
+
+  [ -n "$asn" ] && out="$asn"
+  [ -n "$org" ] && out="${out}${out:+ }${org}"
+  [ -n "$out" ] || out="unknown"
+  printf '%s' "$out"
 }
 
 probe_service() {
@@ -280,11 +378,25 @@ probe_service() {
 }
 
 run_table() {
-  local public_ip line name verdict code seconds remote_ip reason effective_url color reset
+  local public_ip geo country region city asn org timezone line name verdict code seconds remote_ip reason effective_url color reset
   public_ip="$(probe_ip)"
+  geo="$(probe_geo "$public_ip")"
+  country="$(printf '%s' "$geo" | awk -F'\t' '{print $1}')"
+  region="$(printf '%s' "$geo" | awk -F'\t' '{print $2}')"
+  city="$(printf '%s' "$geo" | awk -F'\t' '{print $3}')"
+  asn="$(printf '%s' "$geo" | awk -F'\t' '{print $4}')"
+  org="$(printf '%s' "$geo" | awk -F'\t' '{print $5}')"
+  timezone="$(printf '%s' "$geo" | awk -F'\t' '{print $6}')"
 
   printf '%sAI Unlock Checker%s v%s\n' "$C_GREEN" "$C_RESET" "$VERSION"
   printf 'Public IP: %s%s%s\n' "$C_DIM" "$public_ip" "$C_RESET"
+  if [ "$GEO_OUTPUT" -eq 1 ]; then
+    printf 'IP Geo: %s%s%s\n' "$C_DIM" "$(format_geo_location "$country" "$region" "$city")" "$C_RESET"
+    printf 'ASN: %s%s%s\n' "$C_DIM" "$(format_geo_asn "$asn" "$org")" "$C_RESET"
+    if [ -n "$timezone" ]; then
+      printf 'Timezone: %s%s%s\n' "$C_DIM" "$timezone" "$C_RESET"
+    fi
+  fi
   printf 'Timeout: %ss, Connect timeout: %ss\n\n' "$TIMEOUT" "$CONNECT_TIMEOUT"
   printf '%-20s %-10s %-6s %-8s %-16s %s\n' "Service" "Result" "HTTP" "Time" "Remote IP" "Note"
   printf '%-20s %-10s %-6s %-8s %-16s %s\n' "--------------------" "----------" "------" "--------" "----------------" "------------------------------"
@@ -306,15 +418,32 @@ $SERVICES
 EOF
 
   printf '\n%sLegend:%s UNLOCKED=expected response, REACHABLE=network OK but login/browser challenge may apply, LOCKED=region block detected, FAILED=timeout/network/server error.\n' "$C_DIM" "$C_RESET"
+  if [ "$GEO_OUTPUT" -eq 1 ]; then
+    printf '%sNote:%s IP Geo is a third-party reference for the server exit IP. AI providers may judge region differently by account, payment, risk score, ASN, and browser state.\n' "$C_DIM" "$C_RESET"
+  fi
 }
 
 run_json() {
-  local public_ip first line name verdict code seconds remote_ip reason effective_url url expected code_json seconds_json
+  local public_ip geo country region city asn org timezone first line name verdict code seconds remote_ip reason effective_url url expected code_json seconds_json
   public_ip="$(probe_ip)"
+  geo="$(probe_geo "$public_ip")"
+  country="$(printf '%s' "$geo" | awk -F'\t' '{print $1}')"
+  region="$(printf '%s' "$geo" | awk -F'\t' '{print $2}')"
+  city="$(printf '%s' "$geo" | awk -F'\t' '{print $3}')"
+  asn="$(printf '%s' "$geo" | awk -F'\t' '{print $4}')"
+  org="$(printf '%s' "$geo" | awk -F'\t' '{print $5}')"
+  timezone="$(printf '%s' "$geo" | awk -F'\t' '{print $6}')"
   printf '{\n'
   printf '  "tool": "ai-unlock-checker",\n'
   printf '  "version": "%s",\n' "$(json_escape "$VERSION")"
   printf '  "public_ip": "%s",\n' "$(json_escape "$public_ip")"
+  printf '  "geo": {"country":%s,"region":%s,"city":%s,"asn":%s,"org":%s,"timezone":%s,"note":"third-party IP geolocation reference, not provider unlock decision"},\n' \
+    "$(json_string_or_null "$country")" \
+    "$(json_string_or_null "$region")" \
+    "$(json_string_or_null "$city")" \
+    "$(json_string_or_null "$asn")" \
+    "$(json_string_or_null "$org")" \
+    "$(json_string_or_null "$timezone")"
   printf '  "timeout_seconds": %s,\n' "$TIMEOUT"
   printf '  "connect_timeout_seconds": %s,\n' "$CONNECT_TIMEOUT"
   printf '  "results": [\n'
